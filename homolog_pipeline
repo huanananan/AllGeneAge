@@ -1,0 +1,362 @@
+#!~/miniconda3/envs/bioinfo/bin/python3.6.2
+# this pipieline base on lastal, bedtools and python3.6.2
+import os
+import time
+import argparse
+import subprocess
+from multiprocessing import Pool
+from collections import defaultdict
+
+
+def merge_exon(exon_list):
+    exon_list = sorted(exon_list, key=lambda s: s[1])
+
+    mid = exon_list[0]
+
+    merged = []
+
+    for i in exon_list:
+        if i[1] <= mid[2]:
+            if i[2] >= mid[2]:
+                mid[2] = i[2]
+
+        elif i[1] > mid[2]:
+            merged.append(mid)
+            mid = i
+
+    merged.append(mid)
+
+    return merged
+
+
+def bed_get_fasta(aa):
+    file, query_genome_dir = aa
+    subprocess.getoutput('cd '+work_dir+';bedtools getfasta -s -name -fi ' + query_genome_dir + ' -bed exon_bed/'
+                             + file + ' -fo fasta/' + file.split('.')[0] + '.fasta')
+
+
+def run_bed_get_fasta(query_genome_dir):
+    args = []
+    for file in os.listdir('exon_bed'):
+        args.append([file, query_genome_dir])
+    pro_pool = Pool(28)
+    pro_pool.map(bed_get_fasta, args)
+
+
+def from_gtf_get_exon_merged_bed(query_gtf_dir):
+    exon_dict = defaultdict(lambda: [])
+    if q_species in ['Anguilla_anguilla', 'Esox_lucius', 'Gadus_morhua', 'Oncorhynchus_mykiss', 'Salmo_trutta']:
+        with open(query_gtf_dir, 'r') as f:
+            for line in f.readlines():
+                line = line.strip()
+                if '#' in line:
+                    continue
+                line = line.split('\t')
+                if line[1] == 'RefSeq':
+                    if line[2] == 'CDS':
+                        line[8] = line[8].replace('geneID', 'gene_id')
+                        gene_id = line[8].split('gene_id "')[1].split('"')[0]
+                        exon_dict[gene_id].append([line[0], int(line[3]) - 1, int(line[4]) - 1, '-', '.', line[6]])
+                    else:
+                        gene_id = line[8].split('transcript_id "')[1].split('"')[0]
+                        exon_dict[gene_id].append([line[0], int(line[3]) - 1, int(line[4]) - 1, '-', '.', line[6]])
+                else:
+                    if line[2] == 'exon':
+                        line[8] = line[8].replace('geneID', 'gene_id')
+                        gene_id = line[8].split('gene_id "')[1].split('"')[0]
+                        exon_dict[gene_id].append([line[0], int(line[3]) - 1, int(line[4]) - 1, '-', '.', line[6]])
+    else:
+        with open(query_gtf_dir, 'r') as f:
+            for line in f.readlines():
+                line = line.strip()
+                if '#' in line:
+                    continue
+                line = line.split('\t')
+                if line[2] == 'exon':
+                    line[8] = line[8].replace('geneID', 'gene_id')
+                    gene_id = line[8].split('gene_id "')[1].split('"')[0]
+                    exon_dict[gene_id].append([line[0], int(line[3]) - 1, int(line[4]) - 1, '-', '.', line[6]])
+
+    for gene_id in exon_dict:
+        exon_dict[gene_id] = merge_exon(exon_dict[gene_id])
+
+    bed_result = []
+    count = 0
+    lengthOFbed = len([0 for p in exon_dict for q in exon_dict[p]])
+    for gene_id in exon_dict:
+        i = 1
+        for loci in exon_dict[gene_id]:
+            bed_result.append('\t'.join([loci[0], str(loci[1]), str(loci[2]), gene_id + '_' + str(i), '.', loci[-1]]))
+            i += 1
+            count += 1
+            if count % 1000 == 0:
+                a = open('exon_bed/' + Args.query_genome_gtf.split('/')[-1].split('.')[0] + '_merged_exon' + str(count)
+                         + '.bed', 'w')
+                a.write('\n'.join(bed_result))
+                a.close()
+                bed_result = []
+
+            elif count == lengthOFbed:
+                a = open('exon_bed/' + Args.query_genome_gtf.split('/')[-1].split('.')[0] + '_merged_exon' + str(count)
+                         + '.bed', 'w')
+                a.write('\n'.join(bed_result))
+                a.close()
+                bed_result = []
+
+
+def lastbd(target_genome_dir):
+    os.chdir('../../lastal_db/')
+    subprocess.getoutput('lastdb -P28 ' + species + '_db ' + target_genome_dir)
+    os.chdir(work_dir)
+
+
+def lastal(fasta_file):
+    fasta_file = fasta_file[0]
+    if Args.target_genome_fasta != Args.query_genome_fasta:
+        subprocess.getoutput('cd ' + work_dir + ';lastal -P28 -s 2 -p ' + species + '.train ../../lastal_db/' + species +
+                             '_db fasta/' + fasta_file +
+                             ' | last-postmask > mafft/' + fasta_file.split('.')[0] + '.mafft')
+    else:
+        # paralog
+        subprocess.getoutput('cd ' + work_dir + ';lastal -P28 -s 2 -p HOXD70 ../../lastal_db/' + species +
+                             '_db fasta/' + fasta_file +
+                             ' | last-postmask > mafft/' + fasta_file.split('.')[0] + '.mafft')
+
+
+def run_lastal():
+    if not os.path.exists('mafft'):
+        os.mkdir('mafft')
+
+    # train the matrix
+    print('train the matrix')
+    subprocess.getoutput('cat fasta/* > all.fasta')
+    subprocess.getoutput('last-train -P28 ../../lastal_db/' + species + '_db all.fasta > ' + species + '.train')
+    print('running lastal')
+    args = []
+    for fasta_file in os.listdir('fasta'):
+        args.append([fasta_file])
+    pro_pool = Pool(28)
+    pro_pool.map(lastal, args)
+
+
+def merge_lastal_output2bed():
+    bed = defaultdict(lambda: [])
+    aaaaaa = time.time()
+    for file in os.listdir('mafft'):
+        with open('mafft/' + file) as f:
+            count = 0
+            tmp = []
+            for line in f.readlines():
+                line = line.strip()
+                if line == '' or '#' in line:
+                    continue
+                line = line.split()
+                tmp.append(line)
+                count += 1
+                if count % 3 == 0:
+                    exon_length = int(tmp[2][5])
+                    exon_id = tmp[2][1]
+                    bed[exon_id].append([tmp[1][1], int(tmp[1][2]), int(tmp[1][2]) + int(tmp[1][3]),
+                                         exon_id, '1', tmp[2][4], exon_length])
+                    tmp = []
+                    count = 0
+    print(time.time()-aaaaaa)
+    mafft_merged_exon_bed = []
+    for exon_id in bed:
+        bed[exon_id] = merge_exon(bed[exon_id])
+        for exon in bed[exon_id]:
+            # coverage > 0.1
+            # if (exon[2] - exon[1] + 1) / exon[-1]:
+                exon[1] = str(exon[1])
+                exon[2] = str(exon[2])
+            # query exon mapping length
+                exon[4] = str(exon[2] - exon[1] + 1)
+                mafft_merged_exon_bed.append(exon[0:-1])
+    if not os.path.exists('bed'):
+        os.mkdir('bed')
+
+    a = open('bed/mafft_merged_exon.bed', 'w')
+    a.write('\n'.join(['\t'.join(i) for i in mafft_merged_exon_bed]))
+    a.close()
+
+
+def compare_with_target_transcription_exons(target_gtf_dir):
+    exon_dict = defaultdict(lambda: [])
+    if t_species in ['Anguilla_anguilla', 'Esox_lucius', 'Gadus_morhua', 'Oncorhynchus_mykiss', 'Salmo_trutta']:
+        with open(target_gtf_dir, 'r') as f:
+            for line in f.readlines():
+                line = line.strip()
+                if '#' in line:
+                    continue
+                line = line.split('\t')
+                if line[1] == 'RefSeq':
+                    if line[2] == 'CDS':
+                        line[8] = line[8].replace('geneID', 'gene_id')
+                        gene_id = line[8].split('gene_id "')[1].split('"')[0]
+                        # transcript_id = line[8].split('transcript_id "')[1].split('"')[0]
+                        exon_dict[gene_id].append([line[0], int(line[3]) - 1, int(line[4]) - 1,
+                                                   gene_id, '.', line[6]])
+                    else:
+                        gene_id = line[8].split('transcript_id "')[1].split('"')[0]
+                        # transcript_id = line[8].split('transcript_id "')[1].split('"')[0]
+                        exon_dict[gene_id].append([line[0], int(line[3]) - 1, int(line[4]) - 1,
+                                                   gene_id, '.', line[6]])
+                else:
+                    if line[2] == 'exon':
+                        line[8] = line[8].replace('geneID', 'gene_id')
+                        gene_id = line[8].split('gene_id "')[1].split('"')[0]
+                        # transcript_id = line[8].split('transcript_id "')[1].split('"')[0]
+                        exon_dict[gene_id].append([line[0], int(line[3]) - 1, int(line[4]) - 1,
+                                                   gene_id, '.', line[6]])
+    else:
+        with open(target_gtf_dir, 'r') as f:
+            for line in f.readlines():
+                line = line.strip()
+                if '#' in line:
+                    continue
+                line = line.split('\t')
+                if line[2] == 'exon':
+                    line[8] = line[8].replace('geneID', 'gene_id')
+                    gene_id = line[8].split('gene_id "')[1].split('"')[0]
+                    # transcript_id = line[8].split('transcript_id "')[1].split('"')[0]
+                    exon_dict[gene_id].append([line[0], int(line[3]) - 1, int(line[4]) - 1,
+                                               gene_id, '.', line[6]])
+
+    for gene_id in exon_dict:
+        exon_dict[gene_id] = merge_exon(exon_dict[gene_id])
+        for i in range(len(exon_dict[gene_id])):
+            exon_dict[gene_id][i][1] = str(exon_dict[gene_id][i][1])
+            exon_dict[gene_id][i][2] = str(exon_dict[gene_id][i][2])
+            exon_dict[gene_id][i][3] = exon_dict[gene_id][i][3]+'_'+str(i+1)
+
+    a = open('bed/target_exon.bed', 'w')
+    a.write('\n'.join(['\t'.join(j) for i in exon_dict for j in exon_dict[i]]))
+    a.close()
+
+    subprocess.getoutput('bedtools sort -i bed/mafft_merged_exon.bed > bed/mafft_merged_exon.sort.bed')
+    subprocess.getoutput('bedtools sort -i bed/target_exon.bed > bed/target_exon.sort.bed')
+    subprocess.getoutput('bedtools intersect -s -loj -a bed/mafft_merged_exon.sort.bed -b bed/target_exon.sort.bed'
+                         ' > bed/mafft_interscet_target.bed')
+
+
+def analysis_homology():
+    with_annotation = defaultdict(lambda: defaultdict(lambda: []))
+    # without_annotation = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: [])))
+    with open('bed/mafft_interscet_target.bed') as f:
+        for line in f.readlines():
+            line = line.strip()
+            line = line.split('\t')
+            if line[6] != '.':
+                # chromosome = line[0]
+                # strand = line[5]
+
+                query_gene_id = line[3].split('_')[0]
+                # query_exon = line[3].split('_')[1]
+
+                target_loci_start = line[1]
+                target_loci_end = line[2]
+
+                annotation_gene_id = line[9].split('_')[0]
+                # annotation_exon = line[9].split('_')[1]
+                annotation_loci_start = line[7]
+                annotation_loci_end = line[8]
+                # print(line)
+                # print((int(target_loci_end)-int(target_loci_start)))
+                # print(int(annotation_loci_end)-int(annotation_loci_start))
+                # coverage = (int(target_loci_end)-int(target_loci_start))/(
+                #       int(annotation_loci_end)-int(annotation_loci_start))
+                # coverage > 0.1
+                # if coverage:
+                with_annotation[query_gene_id][annotation_gene_id].append(line)
+
+            '''else:
+                chromosome = line[0]
+                strand = line[5]
+
+                query_gene_id = line[3].split('_')[0]
+                # query_exon = line[3].split('_')[1]
+
+                # target_loci_start = line[1]
+                # target_loci_end = line[2]
+
+                without_annotation[query_gene_id][chromosome][strand].append(line)'''
+
+    # sorted(exon_list, key=lambda s: s[1])
+    if not os.path.exists('output'):
+        os.mkdir('output')
+    result = ''
+    for query_gene_id in with_annotation:
+        for annotation_gene_id in with_annotation[query_gene_id]:
+            for line in with_annotation[query_gene_id][annotation_gene_id]:
+                result += '\t'.join(line) + '\n'
+    a = open('output/with_annotation.tsv', 'w')
+    a.write(result)
+    a.close()
+
+    '''result = ''
+    for query_gene_id in without_annotation:
+        for chromosome in without_annotation[query_gene_id]:
+            for strand in without_annotation[query_gene_id][chromosome]:
+                for line in without_annotation[query_gene_id][chromosome][strand]:
+                    result += '\t'.join(line) + '\n'
+    a = open('test/without_annotation', 'w')
+    a.write(result)
+    a.close()'''
+
+
+if __name__ == '__main__':
+    aaaaa = time.time()
+    parser = argparse.ArgumentParser(description="Find the homology between lncRNA and protein coding gene")
+    parser.add_argument("-q", "--query_genome_gtf", required=False, type=str,
+                        help="The query genome gtf.")
+
+    parser.add_argument("-Q", "--query_genome_fasta", required=False, type=str,
+                        help="The query genome sequence which should be fasta format.")
+
+    parser.add_argument("-t", "--target_genome_gtf", required=False, type=str,
+                        help="The target genome gtf.")
+
+    parser.add_argument("-T", "--target_genome_fasta", required=False, type=str,
+                        help="The target genome sequence which should be fasta format.")
+
+    parser.add_argument("-o", "--output_path", required=True, type=str,
+                        help="output path")
+
+    Args = parser.parse_args()
+
+    print(Args.query_genome_gtf)
+
+    initial_dir = os.getcwd()
+
+    work_dir = Args.output_path
+
+    os.chdir(work_dir)
+
+    species = Args.target_genome_fasta.split('/')[-1].split('.')[0]
+    t_species = Args.target_genome_fasta.split('/')[-1].split('.')[0]
+    q_species = Args.query_genome_fasta.split('/')[-1].split('.')[0]
+
+    print(species,t_species,q_species)
+    if not os.path.exists('exon_bed'):
+        os.mkdir('exon_bed')
+    if not os.path.exists('fasta'):
+        os.mkdir('fasta')
+    if len(os.listdir('exon_bed')) == 0:
+        from_gtf_get_exon_merged_bed(query_gtf_dir=Args.query_genome_gtf)
+    if len(os.listdir('fasta')) == 0:
+        print('get_fasta')
+        run_bed_get_fasta(query_genome_dir=Args.query_genome_fasta)
+
+    if not os.path.exists('../../lastal_db/'):
+        os.mkdir('../../lastal_db/')
+    if species + '_db.bck' not in os.listdir('../../lastal_db/'):
+        print('lastdb')
+        lastbd(target_genome_dir=Args.target_genome_fasta)
+    run_lastal()
+    print('merging output')
+    merge_lastal_output2bed()
+    print('comparing with target transcription exons')
+    compare_with_target_transcription_exons(target_gtf_dir=Args.target_genome_gtf)
+    print('analysis homology')
+    analysis_homology()
+    print(time.time() - aaaaa)
