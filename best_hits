@@ -1,0 +1,328 @@
+import os
+import json
+from collections import defaultdict
+
+
+def homology_gene():
+    coding = set()
+    with open('/home/ybtong/project/homology_new_method/gene_type/'+root_species+'_coding') as f:
+        for line in f.readlines():
+            coding.add(line.strip())
+
+    lnc = set()
+    with open('/home/ybtong/project/homology_new_method/gene_type/'+root_species+'_lncRNA') as f:
+        for line in f.readlines():
+            lnc.add(line.strip())
+
+    species_list = sorted(list(set('_'.join(j.split('_')[0:2])
+                                   for j in os.listdir('/home/ybtong/project/homology_new_method/gene_type'))))
+
+    homology = defaultdict(lambda: defaultdict(lambda: dict(zip(species_list, [set() for i in species_list]))))
+
+    for species in os.listdir('/home/ybtong/project/homology_new_method/' + root_species.strip('_98') + '_query'):
+
+        target_merged_exon_length = defaultdict(lambda: [])
+        with open('/home/ybtong/project/homology_new_method/' + root_species.strip('_98') + '_query/' + species +
+                  "/bed/target_exon.sort.bed") as f:
+            for line in f.readlines():
+                line = line.strip().split('\t')
+                target_merged_exon_length['_'.join(line[3].split('_')[0:-1])].append(int(line[2]) - int(line[1]) + 1)
+        for gene in target_merged_exon_length:
+            target_merged_exon_length[gene] = sum(target_merged_exon_length[gene])
+
+        query_dic = defaultdict(lambda: defaultdict(lambda: []))
+        with open('/home/ybtong/project/homology_new_method/' + root_species.strip('_98') + '_query/' + species +
+                  '/output/with_annotation.tsv') as f:
+            for line in f.readlines():
+                line = line.strip()
+                line = line.split('\t')
+                hit_length = int(line[2])-int(line[1])+1
+                query_dic['_'.join(line[3].split('_')[0:-1])]['_'.join(line[9].split('_')[0:-1])].append(hit_length)
+
+        for gene in query_dic:
+            for ortholog in query_dic[gene]:
+                # print(ortholog)
+                # print(target_merged_exon_length[ortholog])
+                coverage = sum(query_dic[gene][ortholog])/target_merged_exon_length[ortholog]
+                query_dic[gene][ortholog] = coverage
+
+        query_merged_exon_length = defaultdict(lambda: [])
+        with open("/home/ybtong/project/homology_new_method/" + root_species.strip('_98') + "_target/" + species +
+                  "/bed/target_exon.sort.bed") as f:
+            for line in f.readlines():
+                line = line.strip().split('\t')
+                query_merged_exon_length['_'.join(line[3].split('_')[0:-1])].append(int(line[2]) - int(line[1]) + 1)
+        for gene in query_merged_exon_length:
+            query_merged_exon_length[gene] = sum(query_merged_exon_length[gene])
+
+        target_dic = defaultdict(lambda: defaultdict(lambda: []))
+        with open('/home/ybtong/project/homology_new_method/' + root_species.strip('_98') + '_target/' + species +
+                  '/output/with_annotation.tsv') as f:
+            for line in f.readlines():
+                line = line.strip()
+                line = line.split('\t')
+                hit_length = int(line[2]) - int(line[1]) + 1
+                #
+                target_dic['_'.join(line[3].split('_')[0:-1])]['_'.join(line[9].split('_')[0:-1])].append(hit_length)
+
+        for gene in target_dic:
+            for ortholog in target_dic[gene]:
+                print(ortholog)
+                print(query_merged_exon_length[ortholog])
+                coverage = sum(target_dic[gene][ortholog])/query_merged_exon_length[ortholog]
+                target_dic[gene][ortholog] = coverage
+
+        for gene in set(query_dic.keys()) & set(target_dic.keys()):
+            query_mid = defaultdict(lambda: [])
+            target_mid = defaultdict(lambda: [])
+            for ortholog in set(query_dic[gene].keys()) & set(target_dic[gene].keys()):
+                query_mid[query_dic[gene][ortholog]].append(ortholog)
+                target_mid[target_mid[gene][ortholog]].append(ortholog)
+            query_mid1 = {}
+            rank = 0
+            for coverage in sorted(query_dic, reverse=True):
+                rank += 1
+                for ortholog in query_dic[coverage]:
+                    query_mid1[ortholog] = rank
+
+            target_mid1 = {}
+            rank = 0
+            for coverage in sorted(target_dic, reverse=True):
+                rank += 1
+                for ortholog in target_dic[coverage]:
+                    target_mid1[ortholog] = rank
+
+            best_hit = defaultdict(lambda: set())
+            for ortholog in set(query_dic[gene].keys()) & set(target_dic[gene].keys()):
+                best_hit[query_mid1[ortholog] + target_mid1[ortholog]].add(ortholog)
+
+            if gene in coding:
+                homology['cod'][gene][species] = best_hit[sorted(best_hit.keys())[0]]
+            elif gene in lnc:
+                homology['lnc'][gene][species] = best_hit[sorted(best_hit.keys())[0]]
+
+    # paralog just reciprocity
+    for species in os.listdir('/home/ybtong/project/homology_new_method/paralogy'):
+        if species != root_species:
+            continue
+        query_dic = defaultdict(lambda: set())
+        with open(
+                '/home/ybtong/project/homology_new_method/paralogy/' + species + '/output/with_annotation.tsv') as f:
+            for line in f.readlines():
+                line = line.strip()
+                line = line.split('\t')
+                query_dic['_'.join(line[3].split('_')[0:-1])].add('_'.join(line[9].split('_')[0:-1]))
+
+        for gene in query_dic:
+            paralogy_set = set()
+            for paralogy in query_dic[gene]:
+                if paralogy in query_dic:
+                    if gene in query_dic[paralogy]:
+                        paralogy_set.add(paralogy)
+            if gene in coding:
+                homology['cod'][gene][species] = paralogy_set
+            elif gene in lnc:
+                homology['lnc'][gene][species] = paralogy_set
+
+    print(2)
+    result = 'ID\t' + '\t'.join(species_list) + '\n'
+    result1 = 'ID\t' + '\t'.join(species_list) + '\n'
+    result2 = 'ID\t' + '\t'.join(species_list) + '\n'
+    for gene in homology['cod']:
+        b = [gene]
+        d = [gene]
+        f = [gene]
+        for species in homology['cod'][gene]:
+            if len(homology['cod'][gene][species]) > 0:
+                b.append('1')
+            else:
+                b.append('0')
+            d.append(str(len(homology['cod'][gene][species])))
+            f.append(','.join(list(homology['cod'][gene][species])))
+
+        result += '\t'.join(b) + '\n'
+        result1 += '\t'.join(d) + '\n'
+        result2 += '\t'.join(f) + '\n'
+
+    if not os.path.exists('/home/ybtong/project/homology_new_method/' + root_species.strip('_98') + '_best_hit/'):
+        os.mkdir('/home/ybtong/project/homology_new_method/' + root_species.strip('_98') + '_best_hit/')
+    a = open('/home/ybtong/project/homology_new_method/' + root_species.strip('_98') + '_best_hit/coding_UpSet.txt', 'w')
+    a.write(result)
+    a.close()
+    c = open('/home/ybtong/project/homology_new_method/' + root_species.strip('_98') + '_best_hit/coding_UpSet_have_gene_number.txt', 'w')
+    c.write(result1)
+    c.close()
+    e = open('/home/ybtong/project/homology_new_method/' + root_species.strip('_98') + '_best_hit/coding_UpSet_gene.txt', 'w')
+    e.write(result2)
+    e.close()
+
+    print(3)
+    result = 'ID\t' + '\t'.join(species_list) + '\n'
+    result1 = 'ID\t' + '\t'.join(species_list) + '\n'
+    result2 = 'ID\t' + '\t'.join(species_list) + '\n'
+    for gene in homology['lnc']:
+        b = [gene]
+        d = [gene]
+        f = [gene]
+        for species in homology['lnc'][gene]:
+            if len(homology['lnc'][gene][species]) > 0:
+                b.append('1')
+            else:
+                b.append('0')
+            d.append(str(len(homology['lnc'][gene][species])))
+            f.append(','.join(list(homology['lnc'][gene][species])))
+
+        result += '\t'.join(b) + '\n'
+        result1 += '\t'.join(d) + '\n'
+        result2 += '\t'.join(f) + '\n'
+
+    a = open('/home/ybtong/project/homology_new_method/' + root_species.strip('_98') + '_best_hit/lnc_UpSet.txt', 'w')
+    a.write(result)
+    a.close()
+    c = open('/home/ybtong/project/homology_new_method/' + root_species.strip('_98') + '_best_hit/lnc_UpSet_have_gene_number.txt', 'w')
+    c.write(result1)
+    c.close()
+    e = open('/home/ybtong/project/homology_new_method/' + root_species.strip('_98') + '_best_hit/lnc_UpSet_gene.txt', 'w')
+    e.write(result2)
+    e.close()
+
+
+def merge_exon2gene_region(aa):
+    start = []
+    end = []
+    for i in aa:
+        start.append(int(i[1]))
+        end.append(int(i[2]))
+    name = i[3].split('_')[0]
+    return [i[0], str(min(start)), str(max(end)), name, i[4], i[5]]
+
+
+def get_new_method_bed():
+    lnc_list = []
+    with open("/home/ybtong/project/homology_new_method/best_hit/lnc_UpSet.txt") as f:
+        for line in f.readlines():
+            line = line.split('\t')
+            if line[3] == '1':
+                lnc_list.append(line[0])
+
+    cod_list = []
+    with open("/home/ybtong/project/homology_new_method/best_hit/coding_UpSet.txt") as f:
+        for line in f.readlines():
+            line = line.split('\t')
+            if line[3] == '1':
+                cod_list.append(line[0])
+
+    bed_dic = defaultdict(lambda: [])
+    for file in os.listdir('/home/ybtong/project/homology_new_method/bed/'):
+        with open('/home/ybtong/project/homology_new_method/bed/' + file) as f:
+            for line in f.readlines():
+                line = line.strip().split()
+                bed_dic[line[3].split('_')[0]].append(line)
+    for gene in bed_dic:
+        bed_dic[gene] = merge_exon2gene_region(bed_dic[gene])
+
+    result = ''
+    for i in lnc_list:
+        result += '\t'.join(bed_dic[i]) + '\n'
+    a = open('/home/ybtong/project/homology_new_method/compare_with_ensembl98_and_kessem/best_hit_lnc.bed', 'w')
+    a.write(result)
+    a.close()
+
+    result = ''
+    for i in cod_list:
+        result += '\t'.join(bed_dic[i]) + '\n'
+    a = open('/home/ybtong/project/homology_new_method/compare_with_ensembl98_and_kessem/best_hit_cod.bed', 'w')
+    a.write(result)
+    a.close()
+
+
+def analysis_homology_contain(species):
+    gene_type = {}
+    with open('/home/ybtong/project/homology_new_method/gene_type/'+species+'_coding')as f:
+        for line in f.readlines():
+            line = line.strip()
+            gene_type[line] = 'cod'
+    with open('/home/ybtong/project/homology_new_method/gene_type/'+species+'_lncRNA')as f:
+        for line in f.readlines():
+            line = line.strip()
+            gene_type[line] = 'lnc'
+
+    mid = defaultdict(lambda: set())
+    with open("/home/ybtong/project/homology_new_method/" + root_species.strip('_98') + "_best_hit/lnc_UpSet_gene.txt") as f:
+        species_list = f.readline().strip().split('\t')
+        # print(species_list)
+        lll = species_list.index(species)
+        for line in f.readlines():
+            line = line.strip('\n').split('\t')
+
+            aaaa = []
+            bbbb = []
+            for aaa in range(len(line)):
+                count = 0
+                if line[aaa]:
+                    for gene in line[aaa].split(','):
+                        if gene != line[0]:
+                            count += 1
+
+                if count > 1:
+                    aaaa.append(1)
+                else:
+                    bbbb.append(count)
+            if len(aaaa) == 0 and 1 in bbbb:
+                print('\t'.join(line))
+
+            # print(line)
+            if line[lll]:
+
+                for gene in line[lll].split(','):
+                    if gene == line[0]:
+                        continue
+                    try:
+                        mid[line[0]].add(gene_type[gene])
+                    except:
+                        mid[line[0]].add('other')
+
+    out = {'coding': [],
+           'lncRNA': [],
+           'other': [],
+           'coding and lncRNA': [],
+           'lncRNA and other': [],
+           'coding and other': [],
+           'coding and lncRNA and other': [],
+           }
+
+    for gene in mid:
+        if 'cod' in mid[gene] and 'lnc' in mid[gene] and 'other' in mid[gene]:
+            out['coding and lncRNA and other'].append(gene)
+        elif 'cod' in mid[gene] and 'lnc' in mid[gene] and 'other' not in mid[gene]:
+            # print(sorted(list(set(mid[gene]))))
+            out['coding and lncRNA'].append(gene)
+        elif 'cod' in mid[gene] and 'lnc' not in mid[gene] and 'other' in mid[gene]:
+            out['coding and other'].append(gene)
+        elif 'cod' not in mid[gene] and 'lnc' in mid[gene] and 'other' in mid[gene]:
+            out['lncRNA and other'].append(gene)
+        elif 'cod' in mid[gene] and 'lnc' not in mid[gene] and 'other' not in mid[gene]:
+            out['coding'].append(gene)
+        elif 'cod' not in mid[gene] and 'lnc' in mid[gene] and 'other' not in mid[gene]:
+            out['lncRNA'].append(gene)
+        elif 'cod' not in mid[gene] and 'lnc' not in mid[gene] and 'other' in mid[gene]:
+            out['other'].append(gene)
+
+    for j in out:
+        print(len(set(out[j])))
+    # print(out['other'][0:20])
+
+
+root_species = 'mouse_98'
+
+homology_gene()
+# get_new_method_bed()
+
+'''for i in ['mouse_98', 'chicken_98', 'Lepisosteus_oculatus', 'Anguilla_anguilla', 'medaka_98', 'Perca_fluviatilis',
+          'Gadus_morhua', 'Esox_lucius', 'Salmo_trutta', 'Oncorhynchus_mykiss', 'Pangasianodon_hypophthalmus',
+          'Astyanax_mexicanus', 'zebrafish_98']:
+
+    # print(i)
+    if i == 'mouse_98':
+        analysis_homology_contain(i)'''
+
